@@ -1,0 +1,35 @@
+{
+  "name": "stock-portfolio-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord quản lý danh mục chứng khoán",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "register": "tsx scripts/register.ts"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "stock",
+    "portfolio"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vercel/node": "^5.1.14",
+    "discord-api-types": "^0.38.1",
+    "discord-interactions": "^4.1.1",
+    "discord.js": "^14.11.0",
+    "dotenv": "^16.0.3",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^18.16.0",
+    "tcs": "^10.0.2",
+    "ts-node": "^10.9.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.0.4"
+  }
+}

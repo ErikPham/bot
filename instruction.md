@@ -1,0 +1,17 @@
+- Tạo một bot cho Discord để phục vụ việc quản lý porfolio của chứng khoán.
+- Bot sẽ có các chức năng sau:
+    - Thêm cổ phiếu vào danh sách theo mã chứng khoán
+    - Xóa cổ phiếu khỏi danh sách theo mã chứng khoán
+    - Hiển thị danh sách các cổ phiếu đang theo dõi
+    - Hiển thị giá trị của các cổ phiếu đang theo dõi
+    - Hiển thị giá trị của các cổ phiếu đang theo dõi theo thời gian
+- Bot sẽ lưu trữ các thông tin về các cổ phiếu theo dõi vào một cơ sở dữ liệu.
+    - Không dùng database riêng
+    - Data được lưu trữ trong channel private của user. User có thể lựa chọn channel để lưu trữ data.
+    - Toàn bộ danh mục được lưu trữ dựa theo message của user trong channel private.
+
+- Tech stack:
+    - Sử dụng Discord API
+    - NodeJS Esm
+    - TypeScript
+    - Pnpm
