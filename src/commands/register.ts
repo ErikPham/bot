@@ -1,38 +1,57 @@
-import { REST, Routes } from 'discord.js';
-import { config } from 'dotenv';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import type { CommandsCollection } from '../types/stock'
+import process from 'node:process'
+import { REST, Routes } from 'discord.js'
+import { config } from 'dotenv'
+import add from './add'
+import list from './list'
+import portfolio from './portfolio'
+import remove from './remove'
 
-config();
+config()
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-export async function registerCommands() {
-  const commands = [];
-  const commandFiles = fs.readdirSync(__dirname)
-    .filter(file => file.endsWith('.ts') && file !== 'register.ts');
-
-  for (const file of commandFiles) {
-    // Loại bỏ phần mở rộng .ts để import
-    const commandName = file.replace('.ts', '');
-    const command = (await import(`./${commandName}`)).default;
-    commands.push(command.data.toJSON());
+export async function registerCommands(): Promise<CommandsCollection> {
+  const registerCommands: CommandsCollection = {
+    add,
+    remove,
+    portfolio,
+    list,
+  }
+  const regissterCommands = {
+    add,
+    remove,
+    portfolio,
+    list,
   }
 
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN || '');
+  const commands = []
+  for (const [_, file] of Object.entries(regissterCommands)) {
+    commands.push(file.data.toJSON())
+  }
 
   try {
-    console.log('Bắt đầu đăng ký các lệnh ứng dụng (/).');
+    const isDev = process.env.NODE_ENV !== 'production'
+    const clientId = process.env.CLIENT_ID || ''
+    const guildId = process.env.GUILD_ID || ''
+    const token = process.env.DISCORD_TOKEN || ''
+    const rest = new REST({ version: '10' }).setToken(token)
 
-    await rest.put(
-      Routes.applicationCommands(process.env.CLIENT_ID || ''),
-      { body: commands },
-    );
+    if (isDev) {
+      await rest.put(
+        Routes.applicationGuildCommands(clientId, guildId),
+        { body: commands },
+      )
+    }
+    else {
+      await rest.put(
+        Routes.applicationCommands(clientId),
+        { body: commands },
+      )
+    }
 
-    console.log('Đăng ký lệnh thành công.');
-  } catch (error) {
-    console.error(error);
+    return registerCommands
+  }
+  catch (error) {
+    console.error(error)
+    throw error
   }
 }

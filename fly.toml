@@ -1,0 +1,5 @@
+app = "stock-discord-bot"
+primary_region = "sin"
+
+[env]
+PORT = "3000"

@@ -1,9 +1,11 @@
-import { Client, Events, GatewayIntentBits } from 'discord.js';
-import { config } from 'dotenv';
-import { registerCommands } from './commands/register';
+import process from 'node:process'
+import { Client, Events, GatewayIntentBits } from 'discord.js'
+import { config as dotenvConfig } from 'dotenv'
+import { registerCommands } from './commands/register'
+import { Scheduler } from './utils/scheduler'
 
 // Đọc biến môi trường từ file .env
-config();
+dotenvConfig()
 
 // Khởi tạo client với các intents cần thiết
 const client = new Client({
@@ -13,34 +15,45 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
   ],
-});
-
-// Sự kiện khi bot sẵn sàng
-client.once(Events.ClientReady, (readyClient) => {
-  console.log(`Đã đăng nhập thành công với tên ${readyClient.user.tag}`);
-});
-
-// Xử lý sự kiện tương tác (slash commands)
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isCommand()) return;
-
-  const { commandName } = interaction;
-
-  // Xử lý các lệnh
-  try {
-    const command = (await import(`./commands/${commandName}`)).default;
-    await command.execute(interaction);
-  } catch (error) {
-    console.error(error);
-    await interaction.reply({
-      content: 'Đã xảy ra lỗi khi thực hiện lệnh này!',
-      ephemeral: true,
-    });
-  }
-});
+})
 
 // Đăng nhập vào Discord với token
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN)
 
-// Đăng ký các slash commands
-registerCommands();
+registerCommands().then((commands) => {
+  // Sự kiện khi bot sẵn sàng
+  client.once(Events.ClientReady, (readyClient) => {
+    console.warn(`Đã đăng nhập thành công với tên ${readyClient.user.tag}`)
+    
+    // Khởi động profit scheduler
+    const scheduler = Scheduler.getInstance()
+    scheduler.startProfitScheduler(client)
+  })
+
+  // Xử lý sự kiện tương tác (slash commands)
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isCommand())
+      return
+
+    const { commandName } = interaction
+
+    // Xử lý các lệnh
+    try {
+      const command = commands[commandName]
+      if (command) {
+        console.log('interaction', interaction);
+        await command.execute(interaction)
+      }
+      else {
+        await interaction.reply({
+          content: 'Lệnh không hợp lệ!',
+        })
+      }
+    }
+    catch (error) {
+      await interaction.reply({
+        content: 'Đã xảy ra lỗi khi thực hiện lệnh này!',
+      })
+    }
+  })
+})
