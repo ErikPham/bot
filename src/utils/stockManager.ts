@@ -1,4 +1,4 @@
-import type { Message, TextChannel } from 'discord.js'
+import { Message, TextChannel } from 'discord.js'
 import type { StockData, StockPosition, StockPriceResponse } from '../types/stock'
 import process from 'node:process'
 import { Client, GatewayIntentBits } from 'discord.js'
@@ -11,6 +11,20 @@ interface Stock {
   quantity: number
   price: number
   date: string
+}
+
+interface StockFollowPoint {
+  buyPrice: number
+  sellPrice: number
+}
+
+interface StockFollow {
+  symbol: string
+  points: StockFollowPoint[]
+}
+
+interface StockFollowList {
+  stocks: StockFollow[]
 }
 
 interface Portfolio {
@@ -29,6 +43,7 @@ export class StockManager {
   private client: Client
   private isReady: boolean = false
   private readyPromise: Promise<void>
+  private followLists: Map<string, StockFollowList> = new Map()
 
   constructor(userId: string) {
     this.userId = userId
@@ -349,7 +364,8 @@ export class StockManager {
     return Math.floor(now.getTime() / 1000)
   }
 
-  private async fetchStockPrice(stock: string): Promise<number | null> {
+  // Lấy giá cổ phiếu hiện tại
+  async fetchStockPrice(stock: string): Promise<number | null> {
     try {
       const to = this.getLatestMarketTime()
       const url = `${API_BASE_URL}/bars?ticker=${stock}&type=stock&resolution=1&to=${to}&countBack=1`
@@ -484,5 +500,139 @@ export class StockManager {
     }
 
     return portfolios
+  }
+
+  // Thêm điểm theo dõi
+  async addFollowPoint(channelId: string, symbol: string, buyPrice: number, sellPrice: number): Promise<void> {
+    try {
+      const followList = await this.getFollowList(channelId)
+      const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
+
+      if (stockIndex >= 0) {
+        // Thêm điểm mới vào cổ phiếu hiện có
+        followList.stocks[stockIndex].points.push({ buyPrice, sellPrice })
+      } else {
+        // Thêm cổ phiếu mới với điểm theo dõi
+        followList.stocks.push({
+          symbol,
+          points: [{ buyPrice, sellPrice }]
+        })
+      }
+
+      await this.saveFollowList(channelId, followList)
+    }
+    finally {
+      await this.destroy()
+    }
+  }
+
+  // Lấy channel
+  async getChannel(channelId: string): Promise<TextChannel | null> {
+    try {
+      await this.readyPromise
+      const channel = await this.client.channels.fetch(channelId)
+      return channel instanceof TextChannel ? channel : null
+    }
+    catch (error) {
+      console.error('Error getting channel:', error)
+      return null
+    }
+  }
+
+  // Lấy danh sách theo dõi
+  async getFollowList(channelId: string): Promise<StockFollowList> {
+    try {
+      const channel = await this.getChannel(channelId)
+      if (!channel) {
+        throw new Error('Channel not found')
+      }
+
+      const messages = await channel.messages.fetch({ limit: 100 })
+      const followListMessage = messages.find((msg: Message) => 
+        msg.author.id === this.client.user?.id && 
+        msg.content.startsWith('FOLLOW_LIST:')
+      )
+
+      if (followListMessage) {
+        const data = followListMessage.content.replace('FOLLOW_LIST:', '')
+        return JSON.parse(data) as StockFollowList
+      }
+
+      return { stocks: [] }
+    }
+    catch (error) {
+      console.error('Error getting follow list:', error)
+      return { stocks: [] }
+    }
+  }
+
+  // Lưu danh sách theo dõi
+  private async saveFollowList(channelId: string, followList: StockFollowList): Promise<void> {
+    try {
+      const channel = await this.getChannel(channelId)
+      if (!channel) {
+        throw new Error('Channel not found')
+      }
+
+      const messages = await channel.messages.fetch({ limit: 100 })
+      const oldMessage = messages.find((msg: Message) => 
+        msg.author.id === this.client.user?.id && 
+        msg.content.startsWith('FOLLOW_LIST:')
+      )
+
+      const content = `FOLLOW_LIST:${JSON.stringify(followList)}`
+
+      if (oldMessage) {
+        await oldMessage.edit(content)
+      } else {
+        await channel.send(content)
+      }
+    }
+    catch (error) {
+      console.error('Error saving follow list:', error)
+      throw error
+    }
+  }
+
+  // Xóa điểm theo dõi
+  async removeFollowPoint(channelId: string, symbol: string): Promise<boolean> {
+    try {
+      const followList = await this.getFollowList(channelId)
+      const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
+
+      if (stockIndex < 0) {
+        return false
+      }
+
+      // Xóa toàn bộ cổ phiếu khỏi danh sách
+      followList.stocks.splice(stockIndex, 1)
+      await this.saveFollowList(channelId, followList)
+      return true
+    }
+    catch (error) {
+      console.error('Error removing follow point:', error)
+      return false
+    }
+  }
+
+  public async getAllChannels(): Promise<TextChannel[]> {
+    const channels: TextChannel[] = [];
+    try {
+      // Get all guilds the bot is in
+      const guilds = this.client.guilds.cache;
+      
+      // For each guild, get all text channels
+      for (const guild of guilds.values()) {
+        const guildChannels = await guild.channels.fetch();
+        for (const channel of guildChannels.values()) {
+          if (channel?.isTextBased()) {
+            channels.push(channel as TextChannel);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error getting all channels:', error);
+    }
+    return channels;
   }
 }

@@ -46,7 +46,7 @@ export interface CommandModule {
   data: {
     toJSON: () => unknown
   }
-  execute: (interaction: ChatInputCommandInteraction<CacheType> | CommandInteraction<CacheType>) => Promise<void>
+  execute: (interaction: ChatInputCommandInteraction<CacheType>) => Promise<void>
 }
 
 export interface CommandsCollection {

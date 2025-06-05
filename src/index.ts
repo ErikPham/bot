@@ -32,7 +32,7 @@ registerCommands().then((commands) => {
 
   // Xử lý sự kiện tương tác (slash commands)
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isCommand())
+    if (!interaction.isChatInputCommand())
       return
 
     const { commandName } = interaction
@@ -41,7 +41,6 @@ registerCommands().then((commands) => {
     try {
       const command = commands[commandName]
       if (command) {
-        console.log('interaction', interaction);
         await command.execute(interaction)
       }
       else {

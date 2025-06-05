@@ -2,56 +2,40 @@ import type { CommandsCollection } from '../types/stock'
 import process from 'node:process'
 import { REST, Routes } from 'discord.js'
 import { config } from 'dotenv'
-import add from './add'
-import list from './list'
 import portfolio from './portfolio'
-import remove from './remove'
+import follow from './follow'
+import stock from './stock'
 
 config()
 
-export async function registerCommands(): Promise<CommandsCollection> {
-  const registerCommands: CommandsCollection = {
-    add,
-    remove,
-    portfolio,
-    list,
-  }
-  const regissterCommands = {
-    add,
-    remove,
-    portfolio,
-    list,
-  }
+const commands = [
+  follow.data,
+  stock.data,
+  portfolio.data,
+]
 
-  const commands = []
-  for (const [_, file] of Object.entries(regissterCommands)) {
-    commands.push(file.data.toJSON())
-  }
+const rest = new REST().setToken(process.env.DISCORD_TOKEN!)
 
+export const registerCommands = async (): Promise<CommandsCollection> => {
   try {
-    const isDev = process.env.NODE_ENV !== 'production'
-    const clientId = process.env.CLIENT_ID || ''
-    const guildId = process.env.GUILD_ID || ''
-    const token = process.env.DISCORD_TOKEN || ''
-    const rest = new REST({ version: '10' }).setToken(token)
+    console.log('Started refreshing application (/) commands.')
 
-    if (isDev) {
-      await rest.put(
-        Routes.applicationGuildCommands(clientId, guildId),
-        { body: commands },
-      )
-    }
-    else {
-      await rest.put(
-        Routes.applicationCommands(clientId),
-        { body: commands },
-      )
-    }
+    await rest.put(
+      Routes.applicationCommands(process.env.CLIENT_ID!),
+      { body: commands },
+    )
 
-    return registerCommands
+    console.log('Successfully reloaded application (/) commands.')
+    return commandsCollection;
   }
   catch (error) {
     console.error(error)
-    throw error
+    return commandsCollection;
   }
+}
+
+export const commandsCollection: CommandsCollection = {
+  follow,
+  stock,
+  portfolio,
 }
