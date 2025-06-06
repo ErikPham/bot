@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js'
+import type { ChatInputCommandInteraction, TextChannel } from 'discord.js'
 import { EmbedBuilder, SlashCommandBuilder } from 'discord.js'
 import { StockManager } from '../utils/stockManager'
 import { Scheduler } from '../utils/scheduler'
@@ -16,12 +16,20 @@ export default {
             .setDescription('Mã cổ phiếu')
             .setRequired(true))
         .addNumberOption(option =>
-          option.setName('buy_price')
-            .setDescription('Giá mua')
+          option.setName('entry')
+            .setDescription('Giá mua (entry)')
             .setRequired(true))
         .addNumberOption(option =>
-          option.setName('sell_price')
-            .setDescription('Giá bán')
+          option.setName('take_profit')
+            .setDescription('Giá chốt lời (take profit)')
+            .setRequired(true))
+        .addNumberOption(option =>
+          option.setName('stop_loss')
+            .setDescription('Giá cắt lỗ (stop loss)')
+            .setRequired(true))
+        .addNumberOption(option =>
+          option.setName('volume')
+            .setDescription('Khối lượng (volume)')
             .setRequired(true)))
     .addSubcommand(subcommand =>
       subcommand
@@ -34,7 +42,11 @@ export default {
         .addStringOption(option =>
           option.setName('symbol')
             .setDescription('Mã cổ phiếu cần xóa')
-            .setRequired(true))),
+            .setRequired(true))
+        .addNumberOption(option =>
+          option.setName('entry')
+            .setDescription('Entry muốn xóa (nếu không nhập sẽ xóa hết)')
+            .setRequired(false))),
 
   async execute(interaction: ChatInputCommandInteraction) {
     await interaction.deferReply()
@@ -47,12 +59,18 @@ export default {
       switch (subcommand) {
         case 'add': {
           const symbol = interaction.options.getString('symbol', true)
-          const buyPrice = interaction.options.getNumber('buy_price', true)
-          const sellPrice = interaction.options.getNumber('sell_price', true)
+          const entry = interaction.options.getNumber('entry', true)
+          const takeProfit = interaction.options.getNumber('take_profit', true)
+          const stopLoss = interaction.options.getNumber('stop_loss', true)
+          const volume = interaction.options.getNumber('volume', true)
 
-          await stockManager.addFollowPoint(interaction.channelId, symbol, buyPrice, sellPrice)
-          await scheduler.startPriceCheck(interaction.channelId)
-          await interaction.editReply(`✅ Đã thêm điểm theo dõi cho ${symbol}:\n🟢 Mua: ${buyPrice.toLocaleString('vi-VN')}\n🔴 Bán: ${sellPrice.toLocaleString('vi-VN')}\n\nBot sẽ tự động thông báo khi giá đạt điểm mua/bán.`)
+          await stockManager.addFollowPoint(interaction.channelId, symbol, entry, takeProfit, stopLoss, volume)
+          await scheduler.startPriceCheck(interaction.channel as TextChannel)
+          await interaction.editReply(`✅ Đã thêm điểm theo dõi cho ${symbol}:
+🟢 Entry: ${entry.toLocaleString('vi-VN')}
+🎯 TP: ${takeProfit.toLocaleString('vi-VN')}
+🛑 SL: ${stopLoss.toLocaleString('vi-VN')}
+📦 Volume: ${volume.toLocaleString('vi-VN')}`)
           break
         }
 
@@ -76,9 +94,10 @@ export default {
               : '\n⚠️ Không thể lấy giá hiện tại'
 
             const pointsText = stock.points.map((point, index) => {
-              const buyDiff = currentPrice ? ((currentPrice - point.buyPrice) / point.buyPrice * 100).toFixed(1) : '?'
-              const sellDiff = currentPrice ? ((point.sellPrice - currentPrice) / currentPrice * 100).toFixed(1) : '?'
-              return `${index + 1}. 🟢 Mua: ${point.buyPrice.toLocaleString('vi-VN')} (${buyDiff}%) - 🔴 Bán: ${point.sellPrice.toLocaleString('vi-VN')} (${sellDiff}%)`
+              const entryDiff = currentPrice ? (((currentPrice - point.entry) / point.entry) * 100).toFixed(1) : '?'
+              const tpDiff = (((point.takeProfit - point.entry) / point.entry) * 100).toFixed(1)
+              const slDiff = (((point.stopLoss - point.entry) / point.entry) * 100).toFixed(1)
+              return `${index + 1}. 🟢 Entry: ${point.entry.toLocaleString('vi-VN')} (${entryDiff}%) | 🎯 TP: ${point.takeProfit.toLocaleString('vi-VN')} (${tpDiff}%) | 🛑 SL: ${point.stopLoss.toLocaleString('vi-VN')} (${slDiff}%) | 📦 Vol: ${point.volume.toLocaleString('vi-VN')}`
             }).join('\n')
 
             embed.addFields({
@@ -95,7 +114,8 @@ export default {
 
         case 'remove': {
           const symbol = interaction.options.getString('symbol', true)
-          const success = await stockManager.removeFollowPoint(interaction.channelId, symbol)
+          const entry = interaction.options.getNumber('entry')
+          const success = await stockManager.removeFollowPoint(interaction.channelId, symbol, entry)
           if (success) {
             await interaction.editReply(`✅ Đã xóa ${symbol} khỏi danh sách theo dõi`)
           } else {

@@ -25,9 +25,10 @@ registerCommands().then((commands) => {
   client.once(Events.ClientReady, (readyClient) => {
     console.warn(`Đã đăng nhập thành công với tên ${readyClient.user.tag}`)
     
-    // Khởi động profit scheduler
+    // Khởi động profit scheduler sau khi bot đã sẵn sàng
     const scheduler = Scheduler.getInstance()
     scheduler.startProfitScheduler(client)
+    console.log(`Bot is ready as ${client.user?.tag}`)
   })
 
   // Xử lý sự kiện tương tác (slash commands)
@@ -50,9 +51,20 @@ registerCommands().then((commands) => {
       }
     }
     catch (error) {
-      await interaction.reply({
-        content: 'Đã xảy ra lỗi khi thực hiện lệnh này!',
-      })
+      console.error(error)
+      if (interaction.replied || interaction.deferred) {
+        try {
+          await interaction.editReply('Đã xảy ra lỗi khi thực hiện lệnh này!');
+        } catch (err) {
+          console.error('editReply failed:', err);
+        }
+      } else {
+        try {
+          await interaction.reply('Đã xảy ra lỗi khi thực hiện lệnh này!');
+        } catch (err) {
+          console.error('reply failed:', err);
+        }
+      }
     }
   })
 })

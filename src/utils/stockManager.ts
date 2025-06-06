@@ -14,8 +14,10 @@ interface Stock {
 }
 
 interface StockFollowPoint {
-  buyPrice: number
-  sellPrice: number
+  entry: number
+  takeProfit: number
+  stopLoss: number
+  volume: number
 }
 
 interface StockFollow {
@@ -68,7 +70,7 @@ export class StockManager {
   }
 
   // Đảm bảo client đã sẵn sàng trước khi thực hiện các thao tác
-  private async ensureReady(): Promise<void> {
+  public async ensureReady(): Promise<void> {
     if (!this.isReady) {
       await this.readyPromise
     }
@@ -503,19 +505,21 @@ export class StockManager {
   }
 
   // Thêm điểm theo dõi
-  async addFollowPoint(channelId: string, symbol: string, buyPrice: number, sellPrice: number): Promise<void> {
+  async addFollowPoint(channelId: string, symbol: string, entry: number, takeProfit: number, stopLoss: number, volume: number): Promise<void> {
     try {
       const followList = await this.getFollowList(channelId)
       const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
 
+      const newPoint: StockFollowPoint = { entry, takeProfit, stopLoss, volume }
+
       if (stockIndex >= 0) {
         // Thêm điểm mới vào cổ phiếu hiện có
-        followList.stocks[stockIndex].points.push({ buyPrice, sellPrice })
+        followList.stocks[stockIndex].points.push(newPoint)
       } else {
         // Thêm cổ phiếu mới với điểm theo dõi
         followList.stocks.push({
           symbol,
-          points: [{ buyPrice, sellPrice }]
+          points: [newPoint]
         })
       }
 
@@ -595,7 +599,7 @@ export class StockManager {
   }
 
   // Xóa điểm theo dõi
-  async removeFollowPoint(channelId: string, symbol: string): Promise<boolean> {
+  async removeFollowPoint(channelId: string, symbol: string, entry?: number): Promise<boolean> {
     try {
       const followList = await this.getFollowList(channelId)
       const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
@@ -605,7 +609,12 @@ export class StockManager {
       }
 
       // Xóa toàn bộ cổ phiếu khỏi danh sách
-      followList.stocks.splice(stockIndex, 1)
+      if (entry) {
+        followList.stocks[stockIndex].points = followList.stocks[stockIndex].points.filter(p => p.entry !== entry)
+      } else {
+        followList.stocks.splice(stockIndex, 1)
+      }
+
       await this.saveFollowList(channelId, followList)
       return true
     }
@@ -620,7 +629,7 @@ export class StockManager {
     try {
       // Get all guilds the bot is in
       const guilds = this.client.guilds.cache;
-      
+
       // For each guild, get all text channels
       for (const guild of guilds.values()) {
         const guildChannels = await guild.channels.fetch();
