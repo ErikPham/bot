@@ -1,11 +1,11 @@
-import { Message, TextChannel } from 'discord.js'
+import { Message, TextChannel, Client, GatewayIntentBits } from 'discord.js'
 import type { StockData, StockPosition, StockPriceResponse } from '../types/stock'
 import process from 'node:process'
-import { Client, GatewayIntentBits } from 'discord.js'
 import { config } from 'dotenv'
 
 config()
 
+// Types
 interface Stock {
   symbol: string
   quantity: number
@@ -31,214 +31,749 @@ interface StockFollowList {
 
 interface Portfolio {
   userId: string
-  channelId: string // Thêm channelId để phân biệt dữ liệu giữa các channel
+  channelId: string
   stocks: Stock[]
 }
 
+// Constants
 const TAX_RATE = 0.001 // 0.1%
 const API_BASE_URL = 'https://apipubaws.tcbs.com.vn/stock-insight/v2/stock'
 const MARKET_OPEN_HOUR = 9
 const MARKET_CLOSE_HOUR = 15
+const STORAGE_PREFIX = {
+  PORTFOLIO: 'PORTFOLIO_DATA',
+  FOLLOW_LIST: 'FOLLOW_LIST_DATA'
+}
 
-export class StockManager {
-  private userId: string
-  private client: Client
-  private isReady: boolean = false
-  private readyPromise: Promise<void>
-  private followLists: Map<string, StockFollowList> = new Map()
+// Discord client management
+function createDiscordClient() {
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+  })
 
-  constructor(userId: string) {
-    this.userId = userId
-    this.client = new Client({
-      intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-      ],
+  const readyPromise = new Promise<void>((resolve) => {
+    client.once('ready', () => {
+      resolve()
     })
+  })
 
-    // Tạo promise để theo dõi trạng thái kết nối
-    this.readyPromise = new Promise((resolve) => {
-      this.client.once('ready', () => {
-        this.isReady = true
-        resolve()
-      })
-    })
+  client.login(process.env.DISCORD_TOKEN)
 
-    // Đăng nhập
-    this.client.login(process.env.DISCORD_TOKEN)
+  return {
+    client,
+    readyPromise,
+    async destroy() {
+      await client.destroy()
+    }
+  }
+}
+
+// Time/market utilities
+function isMarketOpen(): boolean {
+  const timeString = new Date().toLocaleString("en-US", {
+    timeZone: "Asia/Ho_Chi_Minh"
+  })
+  const now = new Date(timeString)
+  const hour = now.getHours()
+  const day = now.getDay()
+
+  // Check weekend (0 = Sunday, 6 = Saturday)
+  if (day === 0 || day === 6) {
+    return false
   }
 
-  // Đảm bảo client đã sẵn sàng trước khi thực hiện các thao tác
-  public async ensureReady(): Promise<void> {
-    if (!this.isReady) {
-      await this.readyPromise
+  // Check market hours
+  return hour >= MARKET_OPEN_HOUR && hour < MARKET_CLOSE_HOUR
+}
+
+function getLatestMarketTime(): number {
+  const timeString = new Date().toLocaleString("en-US", {
+    timeZone: "Asia/Ho_Chi_Minh"
+  })
+  const now = new Date(timeString)
+  const day = now.getDay()
+  const hour = now.getHours()
+
+  // Nếu là cuối tuần hoặc ngoài giờ giao dịch, lấy giá đóng cửa của phiên gần nhất
+  let timestamp = now.getTime()
+
+  // Nếu là Chủ nhật
+  if (day === 0) {
+    timestamp -= 2 * 24 * 60 * 60 * 1000 // Trừ 2 ngày để lấy thứ 6
+  }
+  // Nếu là thứ 7
+  else if (day === 6) {
+    timestamp -= 1 * 24 * 60 * 60 * 1000 // Trừ 1 ngày để lấy thứ 6
+  }
+  // Nếu là ngày trong tuần nhưng trước giờ mở cửa
+  else if (hour < MARKET_OPEN_HOUR) {
+    // Nếu là thứ 2
+    if (day === 1) {
+      timestamp -= 3 * 24 * 60 * 60 * 1000 // Trừ 3 ngày để lấy thứ 6 tuần trước
+    } else {
+      timestamp -= 1 * 24 * 60 * 60 * 1000 // Trừ 1 ngày
     }
   }
 
-  // Đóng kết nối khi đã hoàn thành
-  public async destroy(): Promise<void> {
-    await this.client.destroy()
+  return timestamp
+}
+
+// Helper functions
+function generateId(): string {
+  return Math.random().toString(36).substring(2, 9)
+}
+
+function calculateTax(price: number, volume: number): number {
+  return price * volume * TAX_RATE
+}
+
+function calculateProfit(current: number, buyPrice: number, volume: number): number {
+  const profit = (current - buyPrice) * volume
+  return profit - calculateTax(current, volume)
+}
+
+// Stock API
+async function fetchStockPrice(stock: string): Promise<number | null> {
+  try {
+    const url = `${API_BASE_URL}/quote/${stock}`
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+    const data = await response.json() as StockPriceResponse
+    return data.price
   }
+  catch (error) {
+    console.error(`Lỗi khi lấy giá cổ phiếu ${stock}:`, error)
+    return null
+  }
+}
 
-  // Lấy tin nhắn lưu trữ dữ liệu
-  private async getStorageMessage(channelId: string): Promise<Message | null> {
-    await this.ensureReady()
+async function fetchPreviousStockPrice(stock: string): Promise<number | null> {
+  try {
+    const timestamp = getLatestMarketTime()
+    const date = new Date(timestamp)
+    const formattedDate = date.toISOString().split('T')[0]
 
-    const channel = this.client.channels.cache.get(channelId) as TextChannel
-
-    if (!channel) {
-      throw new Error('Không tìm thấy kênh lưu trữ.')
+    const url = `${API_BASE_URL}/historical/${stock}?from=${formattedDate}&to=${formattedDate}&resolution=D`
+    const response = await fetch(url)
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
     }
 
-    // Tìm tin nhắn có chứa dữ liệu portfolio
-    const messages = await channel.messages.fetch({ limit: 100 })
-    const storageMessage = messages.find(msg =>
-      msg.author.id === this.client.user?.id
-      && msg.content.match(new RegExp(`PORTFOLIO_DATA_.*_${channelId}:`)),
+    const data = await response.json()
+    if (data && data.c && data.c.length > 0) {
+      return data.c[0]
+    }
+    
+    return null
+  }
+  catch (error) {
+    console.error(`Lỗi khi lấy giá đóng cửa cổ phiếu ${stock}:`, error)
+    return null
+  }
+}
+
+// Channel management
+async function getChannel(client: Client, channelId: string): Promise<TextChannel | null> {
+  try {
+    const channel = client.channels.cache.get(channelId) as TextChannel
+    return channel || null
+  }
+  catch (error) {
+    console.error('Lỗi khi lấy kênh:', error)
+    return null
+  }
+}
+
+async function getAllChannels(client: Client): Promise<TextChannel[]> {
+  try {
+    const channels = client.channels.cache.filter((channel): channel is TextChannel => 
+      channel.type === 0
     )
+    
+    return Array.from(channels.values())
+  }
+  catch (error) {
+    console.error('Lỗi khi lấy danh sách kênh:', error)
+    return []
+  }
+}
 
-    return storageMessage || null
+async function getAllChannelsWithData(client: Client): Promise<string[]> {
+  try {
+    const channels = client.channels.cache.filter((channel): channel is TextChannel => 
+      channel.type === 0
+    )
+    
+    const channelIds: string[] = []
+    
+    for (const [id, channel] of channels) {
+      try {
+        const messages = await channel.messages.fetch({ limit: 100 })
+        const hasPortfolioData = messages.some(msg => 
+          msg.author.id === client.user?.id && 
+          msg.content.includes(`${STORAGE_PREFIX.PORTFOLIO}_`)
+        )
+
+        if (hasPortfolioData) {
+          channelIds.push(id)
+        }
+      }
+      catch (error) {
+        console.error(`Lỗi khi kiểm tra kênh ${id}:`, error)
+      }
+    }
+
+    return channelIds
+  }
+  catch (error) {
+    console.error('Lỗi khi lấy danh sách kênh:', error)
+    return []
+  }
+}
+
+// Storage functions
+async function getStorageMessage(client: Client, userId: string, channelId: string, prefix: string): Promise<Message | null> {
+  const channel = await getChannel(client, channelId)
+  if (!channel) {
+    throw new Error('Không tìm thấy kênh lưu trữ.')
   }
 
-  // Lưu dữ liệu portfolio
-  private async savePortfolio(channelId: string, portfolio: Portfolio): Promise<void> {
-    await this.ensureReady()
+  const messages = await channel.messages.fetch({ limit: 100 })
+  const pattern = new RegExp(`${prefix}_.*_${channelId}:`)
+  const storageMessage = messages.find(msg =>
+    msg.author.id === client.user?.id && msg.content.match(pattern)
+  )
 
-    const channel = this.client.channels.cache.get(channelId) as TextChannel
+  return storageMessage || null
+}
 
-    if (!channel) {
-      throw new Error('Không tìm thấy kênh lưu trữ.')
-    }
-
-    const storageMessage = await this.getStorageMessage(channelId)
-    const dataString = `PORTFOLIO_DATA_${this.userId}_${channelId}: ${JSON.stringify(portfolio)}`
-
-    if (storageMessage) {
-      await storageMessage.edit(dataString)
-    }
-    else {
-      await channel.send(dataString)
-    }
+async function saveData<T>(client: Client, userId: string, channelId: string, prefix: string, data: T): Promise<void> {
+  const channel = await getChannel(client, channelId)
+  if (!channel) {
+    throw new Error('Không tìm thấy kênh lưu trữ.')
   }
 
-  // Lấy dữ liệu portfolio
-  private async getPortfolio(channelId: string): Promise<Portfolio> {
-    const storageMessage = await this.getStorageMessage(channelId)
+  const storageMessage = await getStorageMessage(client, userId, channelId, prefix)
+  const dataString = `${prefix}_${userId}_${channelId}: ${JSON.stringify(data)}`
 
-    if (!storageMessage) {
-      return { userId: this.userId, channelId, stocks: [] }
-    }
+  if (storageMessage) {
+    await storageMessage.edit(dataString)
+  }
+  else {
+    await channel.send(dataString)
+  }
+}
 
+async function getData<T>(client: Client, userId: string, channelId: string, prefix: string, defaultData: T): Promise<T> {
+  const storageMessage = await getStorageMessage(client, userId, channelId, prefix)
+
+  if (!storageMessage) {
+    return defaultData
+  }
+
+  try {
+    const dataPattern = new RegExp(`${prefix}_.*_\\d+:\\s*`)
+    const dataString = storageMessage.content.replace(dataPattern, '')
+    return JSON.parse(dataString) as T
+  }
+  catch (error) {
+    console.error(`Lỗi khi phân tích dữ liệu ${prefix}:`, error)
+    return defaultData
+  }
+}
+
+// Portfolio management
+async function getPortfolio(client: Client, userId: string, channelId: string): Promise<Portfolio> {
+  return getData(
+    client,
+    userId,
+    channelId, 
+    STORAGE_PREFIX.PORTFOLIO, 
+    { userId, channelId, stocks: [] }
+  )
+}
+
+async function savePortfolio(client: Client, userId: string, channelId: string, portfolio: Portfolio): Promise<void> {
+  await saveData(client, userId, channelId, STORAGE_PREFIX.PORTFOLIO, portfolio)
+}
+
+async function addStock(client: Client, userId: string, channelId: string, symbol: string, quantity: number, price: number): Promise<void> {
+  const portfolio = await getPortfolio(client, userId, channelId)
+  const existingStockIndex = portfolio.stocks.findIndex(s => s.symbol === symbol)
+
+  if (existingStockIndex >= 0) {
+    // Cập nhật cổ phiếu hiện có
+    const oldQuantity = portfolio.stocks[existingStockIndex].quantity
+    const oldPrice = portfolio.stocks[existingStockIndex].price
+
+    // Tính giá trung bình
+    const oldValue = oldQuantity * oldPrice
+    const newValue = quantity * price
+    const totalQuantity = oldQuantity + quantity
+
+    portfolio.stocks[existingStockIndex].quantity = totalQuantity
+    portfolio.stocks[existingStockIndex].price = (oldValue + newValue) / totalQuantity
+  }
+  else {
+    // Thêm cổ phiếu mới
+    portfolio.stocks.push({
+      symbol,
+      quantity,
+      price,
+      date: new Date().toISOString(),
+    })
+  }
+
+  await savePortfolio(client, userId, channelId, portfolio)
+}
+
+async function removeStock(client: Client, userId: string, channelId: string, symbol: string): Promise<void> {
+  const portfolio = await getPortfolio(client, userId, channelId)
+  const stockIndex = portfolio.stocks.findIndex(s => s.symbol === symbol)
+
+  if (stockIndex < 0) {
+    throw new Error(`Không tìm thấy cổ phiếu ${symbol} trong danh sách.`)
+  }
+
+  portfolio.stocks.splice(stockIndex, 1)
+  await savePortfolio(client, userId, channelId, portfolio)
+}
+
+async function getStocks(client: Client, userId: string, channelId: string): Promise<Stock[]> {
+  const portfolio = await getPortfolio(client, userId, channelId)
+  return portfolio.stocks
+}
+
+async function getAllPortfolios(client: Client, userId: string): Promise<{ [channelId: string]: Portfolio }> {
+  const channelIds = await getAllChannelsWithData(client)
+  const portfolios: { [channelId: string]: Portfolio } = {}
+
+  for (const channelId of channelIds) {
     try {
-      const dataString = storageMessage.content.replace(/PORTFOLIO_DATA_.*_\d+:\s*/, '')
-      return JSON.parse(dataString) as Portfolio
+      portfolios[channelId] = await getPortfolio(client, userId, channelId)
     }
     catch (error) {
-      console.error('Lỗi khi phân tích dữ liệu portfolio:', error)
-      return { userId: this.userId, channelId, stocks: [] }
+      console.error(`Lỗi khi lấy portfolio cho kênh ${channelId}:`, error)
     }
   }
 
-  // Thêm cổ phiếu
-  async addStock(channelId: string, symbol: string, quantity: number, price: number): Promise<void> {
-    try {
-      const portfolio = await this.getPortfolio(channelId)
+  return portfolios
+}
 
-      // Kiểm tra xem cổ phiếu đã tồn tại chưa
-      const existingStockIndex = portfolio.stocks.findIndex(s => s.symbol === symbol)
+// Follow list management
+async function getFollowList(client: Client, userId: string, channelId: string): Promise<StockFollowList> {
+  return getData(
+    client,
+    userId,
+    channelId,
+    STORAGE_PREFIX.FOLLOW_LIST,
+    { stocks: [] }
+  )
+}
 
-      if (existingStockIndex >= 0) {
-        // Cập nhật cổ phiếu hiện có
-        const oldQuantity = portfolio.stocks[existingStockIndex].quantity
-        const oldPrice = portfolio.stocks[existingStockIndex].price
+async function saveFollowList(client: Client, userId: string, channelId: string, followList: StockFollowList): Promise<void> {
+  await saveData(client, userId, channelId, STORAGE_PREFIX.FOLLOW_LIST, followList)
+}
 
-        // Tính giá trung bình
-        const oldValue = oldQuantity * oldPrice
-        const newValue = quantity * price
-        const totalQuantity = oldQuantity + quantity
+async function addFollowPoint(
+  client: Client, 
+  userId: string, 
+  channelId: string, 
+  symbol: string, 
+  entry: number, 
+  takeProfit: number, 
+  stopLoss: number, 
+  volume: number
+): Promise<void> {
+  const followList = await getFollowList(client, userId, channelId)
+  
+  // Tìm xem cổ phiếu đã có trong danh sách theo dõi chưa
+  const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
 
-        portfolio.stocks[existingStockIndex].quantity = totalQuantity
-        portfolio.stocks[existingStockIndex].price = (oldValue + newValue) / totalQuantity
+  if (stockIndex >= 0) {
+    // Thêm điểm theo dõi mới vào cổ phiếu đã tồn tại
+    followList.stocks[stockIndex].points.push({
+      entry,
+      takeProfit,
+      stopLoss,
+      volume
+    })
+  }
+  else {
+    // Thêm cổ phiếu mới với điểm theo dõi
+    followList.stocks.push({
+      symbol,
+      points: [{
+        entry,
+        takeProfit,
+        stopLoss,
+        volume
+      }]
+    })
+  }
+
+  await saveFollowList(client, userId, channelId, followList)
+  
+  const channel = await getChannel(client, channelId)
+  if (channel) {
+    await channel.send(
+      `🔍 **Thêm điểm theo dõi thành công!**\n` +
+      `📈 ${symbol}\n` +
+      `🟢 Giá mua: ${entry.toLocaleString('vi-VN')}\n` +
+      `🔴 Giá bán: ${takeProfit.toLocaleString('vi-VN')}\n` +
+      `⛔ Dừng lỗ: ${stopLoss.toLocaleString('vi-VN')}\n` +
+      `📊 Khối lượng: ${volume}`
+    )
+  }
+}
+
+async function removeFollowPoint(
+  client: Client, 
+  userId: string, 
+  channelId: string, 
+  symbol: string, 
+  entry?: number
+): Promise<boolean> {
+  const followList = await getFollowList(client, userId, channelId)
+  const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
+
+  if (stockIndex < 0) {
+    return false
+  }
+
+  if (entry !== undefined) {
+    // Xóa điểm theo dõi cụ thể
+    const pointIndex = followList.stocks[stockIndex].points.findIndex(p => p.entry === entry)
+    
+    if (pointIndex < 0) {
+      return false
+    }
+    
+    followList.stocks[stockIndex].points.splice(pointIndex, 1)
+    
+    // Nếu không còn điểm theo dõi nào, xóa luôn cổ phiếu
+    if (followList.stocks[stockIndex].points.length === 0) {
+      followList.stocks.splice(stockIndex, 1)
+    }
+  }
+  else {
+    // Xóa tất cả điểm theo dõi của cổ phiếu
+    followList.stocks.splice(stockIndex, 1)
+  }
+
+  await saveFollowList(client, userId, channelId, followList)
+  return true
+}
+
+// Portfolio analysis
+async function getPortfolioDetails(
+  client: Client,
+  userId: string,
+  channelId: string
+): Promise<{
+  stocks: StockData[]
+  isMarketOpen: boolean
+  totalValue: number
+  totalProfitPercent: number
+  totalInvestment: number
+  totalProfit: number
+}> {
+  const portfolio = await getPortfolio(client, userId, channelId)
+  const marketOpen = isMarketOpen()
+  
+  const stocksData: StockData[] = []
+  let totalValue = 0
+  let totalInvestment = 0
+  
+  for (const stock of portfolio.stocks) {
+    const currentPrice = await fetchStockPrice(stock.symbol)
+    const previousPrice = await fetchPreviousStockPrice(stock.symbol)
+    
+    if (currentPrice) {
+      const marketValue = currentPrice * stock.quantity
+      const investValue = stock.price * stock.quantity
+      const previousPercent = previousPrice ? ((currentPrice - previousPrice) / previousPrice) * 100 : 0
+      
+      stocksData.push({
+        code: stock.symbol,
+        volume: stock.quantity,
+        current: currentPrice,
+        buy: stock.price,
+        previousPrice: previousPrice || currentPrice,
+        previousPercent,
+        marketValue,
+        investValue,
+        profit: marketValue - investValue,
+        profitPercent: ((marketValue - investValue) / investValue) * 100
+      })
+      
+      totalValue += marketValue
+      totalInvestment += investValue
+    }
+  }
+  
+  const totalProfit = totalValue - totalInvestment
+  const totalProfitPercent = totalInvestment > 0 ? (totalProfit / totalInvestment) * 100 : 0
+  
+  return {
+    stocks: stocksData,
+    isMarketOpen: marketOpen,
+    totalValue,
+    totalProfitPercent,
+    totalInvestment,
+    totalProfit
+  }
+}
+
+// Position management
+async function addPosition(
+  client: Client, 
+  userId: string, 
+  channelId: string, 
+  position: StockPosition
+): Promise<boolean> {
+  try {
+    const id = generateId()
+    const channel = await getChannel(client, channelId)
+    
+    if (!channel) {
+      throw new Error('Không tìm thấy kênh.')
+    }
+    
+    const current = await fetchStockPrice(position.stock)
+    
+    if (!current) {
+      throw new Error(`Không thể lấy giá cổ phiếu ${position.stock}.`)
+    }
+    
+    // Khi thêm lệnh, chúng ta cũng cập nhật danh mục đầu tư
+    await addStock(client, userId, channelId, position.stock, position.volume, position.buyPrice)
+    
+    const profit = calculateProfit(current, position.buyPrice, position.volume)
+    const profitPercent = (profit / (position.buyPrice * position.volume)) * 100
+    
+    await channel.send(
+      `🟢 **Thêm lệnh thành công!**\n` +
+      `📊 ${position.stock}\n` +
+      `💰 Giá mua: ${position.buyPrice.toLocaleString('vi-VN')}\n` +
+      `📈 Giá hiện tại: ${current.toLocaleString('vi-VN')}\n` +
+      `📊 Lãi/Lỗ: ${profit.toFixed(0).toLocaleString('vi-VN')} (${profitPercent.toFixed(2)}%)\n` +
+      `🆔 ID: ${id}`
+    )
+    
+    return true
+  }
+  catch (error) {
+    console.error('Lỗi khi thêm lệnh:', error)
+    return false
+  }
+}
+
+// Main API for backwards compatibility
+export function createStockManager(userId: string) {
+  const { client, readyPromise, destroy } = createDiscordClient()
+  
+  // Map of functions that need client access
+  const api = {
+    // Core client methods
+    async ensureReady(): Promise<void> {
+      await readyPromise
+    },
+    
+    destroy,
+    
+    // Exposed methods with client bundled in
+    fetchStockPrice,
+    isMarketOpen,
+    
+    // Channel methods
+    async getChannel(channelId: string): Promise<TextChannel | null> {
+      return getChannel(client, channelId)
+    },
+    
+    async getAllChannels(): Promise<TextChannel[]> {
+      return getAllChannels(client)
+    },
+    
+    async getAllChannelsWithData(): Promise<string[]> {
+      return getAllChannelsWithData(client)
+    },
+    
+    // Portfolio methods
+    async getPortfolio(channelId: string): Promise<Portfolio> {
+      return getPortfolio(client, userId, channelId)
+    },
+    
+    async addStock(channelId: string, symbol: string, quantity: number, price: number): Promise<void> {
+      await api.ensureReady()
+      try {
+        await addStock(client, userId, channelId, symbol, quantity, price)
+      } finally {
+        // Don't destroy here anymore as we're reusing the client
       }
-      else {
-        // Thêm cổ phiếu mới
-        portfolio.stocks.push({
-          symbol,
-          quantity,
-          price,
-          date: new Date().toISOString(),
-        })
+    },
+    
+    async removeStock(channelId: string, symbol: string): Promise<void> {
+      await api.ensureReady()
+      try {
+        await removeStock(client, userId, channelId, symbol)
+      } finally {
+        // Don't destroy here anymore
       }
-
-      await this.savePortfolio(channelId, portfolio)
-    }
-    finally {
-      // Đóng kết nối sau khi hoàn thành
-      await this.destroy()
-    }
-  }
-
-  // Xóa cổ phiếu
-  async removeStock(channelId: string, symbol: string): Promise<void> {
-    try {
-      const portfolio = await this.getPortfolio(channelId)
-
-      const stockIndex = portfolio.stocks.findIndex(s => s.symbol === symbol)
-
-      if (stockIndex < 0) {
-        throw new Error(`Không tìm thấy cổ phiếu ${symbol} trong danh sách.`)
+    },
+    
+    async getStocks(channelId: string): Promise<Stock[]> {
+      await api.ensureReady()
+      try {
+        return await getStocks(client, userId, channelId)
+      } finally {
+        // Don't destroy here anymore
       }
-
-      portfolio.stocks.splice(stockIndex, 1)
-
-      await this.savePortfolio(channelId, portfolio)
-    }
-    finally {
-      // Đóng kết nối sau khi hoàn thành
-      await this.destroy()
+    },
+    
+    async getAllPortfolios(): Promise<{ [channelId: string]: Portfolio }> {
+      await api.ensureReady()
+      return getAllPortfolios(client, userId)
+    },
+    
+    // Follow list methods
+    async getFollowList(channelId: string): Promise<StockFollowList> {
+      await api.ensureReady()
+      return getFollowList(client, userId, channelId)
+    },
+    
+    async addFollowPoint(
+      channelId: string, 
+      symbol: string, 
+      entry: number, 
+      takeProfit: number, 
+      stopLoss: number, 
+      volume: number
+    ): Promise<void> {
+      await api.ensureReady()
+      return addFollowPoint(client, userId, channelId, symbol, entry, takeProfit, stopLoss, volume)
+    },
+    
+    async removeFollowPoint(channelId: string, symbol: string, entry?: number): Promise<boolean> {
+      await api.ensureReady()
+      return removeFollowPoint(client, userId, channelId, symbol, entry)
+    },
+    
+    // Portfolio analysis
+    async getPortfolioDetails(channelId: string): Promise<{
+      stocks: StockData[]
+      isMarketOpen: boolean
+      totalValue: number
+      totalProfitPercent: number
+      totalInvestment: number
+      totalProfit: number
+    }> {
+      await api.ensureReady()
+      return getPortfolioDetails(client, userId, channelId)
+    },
+    
+    // Position management
+    async addPosition(channelId: string, position: StockPosition): Promise<boolean> {
+      await api.ensureReady()
+      return addPosition(client, userId, channelId, position)
+    },
+    
+    removePosition(channelId: string, id: string): boolean {
+      // This is just a stub, actual implementation would need to be added
+      console.error('removePosition: Not implemented')
+      return false
     }
   }
+  
+  return api
+}
 
-  // Lấy danh sách cổ phiếu
-  async getStocks(channelId: string): Promise<Stock[]> {
-    try {
-      const portfolio = await this.getPortfolio(channelId)
-      return portfolio.stocks
-    }
-    finally {
-      // Đóng kết nối sau khi hoàn thành
-      await this.destroy()
-    }
+// For backwards compatibility with existing code
+export class StockManager {
+  private userId: string
+  private api: ReturnType<typeof createStockManager>
+  
+  constructor(userId: string) {
+    this.userId = userId
+    this.api = createStockManager(userId)
   }
-
-  // Lấy giá trị hiện tại của danh mục
-  async getCurrentValue(channelId: string): Promise<number> {
-    try {
-      // Ở đây bạn sẽ cần tích hợp với API chứng khoán để lấy giá hiện tại
-      // Đây chỉ là mẫu, bạn cần thay thế bằng API thực tế
-      const portfolio = await this.getPortfolio(channelId)
-      let totalValue = 0
-
-      for (const stock of portfolio.stocks) {
-        // Giả sử chúng ta có hàm getStockPrice để lấy giá hiện tại
-        // const currentPrice = await getStockPrice(stock.symbol);
-        // Tạm thời dùng giá mua
-        const currentPrice = stock.price
-        totalValue += stock.quantity * currentPrice
-      }
-
-      return totalValue
-    }
-    finally {
-      // Đóng kết nối sau khi hoàn thành
-      await this.destroy()
-    }
+  
+  // Proxy all methods to the functional API
+  public async ensureReady(): Promise<void> {
+    return this.api.ensureReady()
   }
-
-  private stocks: Map<string, StockData[]> = new Map()
-
-  async getPortfolioDetails(channelId: string): Promise<{
+  
+  public async destroy(): Promise<void> {
+    return this.api.destroy()
+  }
+  
+  public isMarketOpen(): boolean {
+    return isMarketOpen()
+  }
+  
+  public async fetchStockPrice(stock: string): Promise<number | null> {
+    return fetchStockPrice(stock)
+  }
+  
+  public async getChannel(channelId: string): Promise<TextChannel | null> {
+    return this.api.getChannel(channelId)
+  }
+  
+  public async getAllChannels(): Promise<TextChannel[]> {
+    return this.api.getAllChannels()
+  }
+  
+  public async getAllChannelsWithData(): Promise<string[]> {
+    return this.api.getAllChannelsWithData()
+  }
+  
+  public async getPortfolio(channelId: string): Promise<Portfolio> {
+    return this.api.getPortfolio(channelId)
+  }
+  
+  public async addStock(channelId: string, symbol: string, quantity: number, price: number): Promise<void> {
+    return this.api.addStock(channelId, symbol, quantity, price)
+  }
+  
+  public async removeStock(channelId: string, symbol: string): Promise<void> {
+    return this.api.removeStock(channelId, symbol)
+  }
+  
+  public async getStocks(channelId: string): Promise<Stock[]> {
+    return this.api.getStocks(channelId)
+  }
+  
+  public async getAllPortfolios(): Promise<{ [channelId: string]: Portfolio }> {
+    return this.api.getAllPortfolios()
+  }
+  
+  public async getFollowList(channelId: string): Promise<StockFollowList> {
+    return this.api.getFollowList(channelId)
+  }
+  
+  public async addFollowPoint(
+    channelId: string, 
+    symbol: string, 
+    entry: number, 
+    takeProfit: number, 
+    stopLoss: number, 
+    volume: number
+  ): Promise<void> {
+    return this.api.addFollowPoint(channelId, symbol, entry, takeProfit, stopLoss, volume)
+  }
+  
+  public async removeFollowPoint(channelId: string, symbol: string, entry?: number): Promise<boolean> {
+    return this.api.removeFollowPoint(channelId, symbol, entry)
+  }
+  
+  public async getPortfolioDetails(channelId: string): Promise<{
     stocks: StockData[]
     isMarketOpen: boolean
     totalValue: number
@@ -246,402 +781,15 @@ export class StockManager {
     totalInvestment: number
     totalProfit: number
   }> {
-    const portfolio = await this.getPortfolio(channelId)
-    const isMarketOpen = this.isMarketOpen()
-
-    if (!portfolio || portfolio.stocks.length === 0) {
-      return {
-        stocks: [],
-        isMarketOpen,
-        totalValue: 0,
-        totalProfitPercent: 0,
-        totalInvestment: 0,
-        totalProfit: 0,
-      }
-    }
-
-    const updatedStocks = await Promise.all(
-      portfolio.stocks.map(async (stock) => {
-        const currentPrice = await this.fetchStockPrice(stock.symbol)
-        const previousPrice = await this.fetchPreviousStockPrice(stock.symbol)
-
-        if (currentPrice) {
-          const volume = stock.quantity
-          const buyPrice = stock.price
-          const investValue = buyPrice * volume / 1000
-          const marketValue = currentPrice * volume / 1000
-          const tax = this.calculateTax(currentPrice, volume)
-          const profit = this.calculateProfit(currentPrice, buyPrice, volume) / 1000
-
-          // Tính phần trăm thay đổi so với phiên trước
-          const previousPercent = previousPrice ? ((currentPrice - previousPrice) / previousPrice) * 100 : 0
-
-          return {
-            id: this.generateId(),
-            code: stock.symbol,
-            buyPrice,
-            price: buyPrice,
-            volume,
-            current: currentPrice,
-            previousPrice: previousPrice || 0,
-            previousPercent,
-            tax,
-            profit,
-            timestamp: Date.now(),
-            total: marketValue,
-            broker: 'TCBS',
-            investValue,
-            marketValue,
-            profitPercent: ((marketValue - investValue) / investValue) * 100,
-          } as StockData
-        }
-        return null
-      }),
-    )
-
-    const validStocks = updatedStocks.filter((stock): stock is StockData => stock !== null)
-
-    const totalInvestment = validStocks.reduce((sum, stock) => sum + stock.investValue, 0)
-    const totalValue = validStocks.reduce((sum, stock) => sum + stock.marketValue, 0)
-    const totalProfit = totalValue - totalInvestment
-    const totalProfitPercent = totalInvestment > 0 ? (totalProfit / totalInvestment) * 100 : 0
-
-    return {
-      stocks: validStocks,
-      isMarketOpen,
-      totalValue,
-      totalProfitPercent,
-      totalInvestment,
-      totalProfit,
-    }
+    return this.api.getPortfolioDetails(channelId)
   }
-
-  private generateId(): string {
-    return Date.now().toString(36) + Math.random().toString(36).substring(2)
+  
+  public async addPosition(channelId: string, position: StockPosition): Promise<boolean> {
+    return this.api.addPosition(channelId, position)
   }
-
-  private calculateTax(price: number, volume: number): number {
-    return price * volume * TAX_RATE
-  }
-
-  private calculateProfit(current: number, buyPrice: number, volume: number): number {
-    const grossProfit = (current - buyPrice) * volume
-    const tax = this.calculateTax(current, volume)
-    return grossProfit - tax
-  }
-
-  public isMarketOpen(): boolean {
-    const timeString = new Date().toLocaleString("en-US", {
-      timeZone: "Asia/Ho_Chi_Minh"
-    });
-    const now = new Date(timeString)
-    const hour = now.getHours()
-    const day = now.getDay()
-
-    if (day === 0 || day === 6)
-      return false
-    return hour >= MARKET_OPEN_HOUR && hour < MARKET_CLOSE_HOUR
-  }
-
-  private getLatestMarketTime(): number {
-    const timeString = new Date().toLocaleString("en-US", {
-      timeZone: "Asia/Ho_Chi_Minh"
-    });
-    const now = new Date(timeString)
-    const hour = now.getHours()
-
-    if (hour < MARKET_OPEN_HOUR) {
-      const yesterday = new Date(now)
-      yesterday.setDate(yesterday.getDate() - 1)
-      yesterday.setHours(MARKET_CLOSE_HOUR, 0, 0, 0)
-      return Math.floor(yesterday.getTime() / 1000)
-    }
-
-    if (hour >= MARKET_CLOSE_HOUR) {
-      const today = new Date(now)
-      today.setHours(MARKET_CLOSE_HOUR, 0, 0, 0)
-      return Math.floor(today.getTime() / 1000)
-    }
-
-    return Math.floor(now.getTime() / 1000)
-  }
-
-  // Lấy giá cổ phiếu hiện tại
-  async fetchStockPrice(stock: string): Promise<number | null> {
-    try {
-      const to = this.getLatestMarketTime()
-      const url = `${API_BASE_URL}/bars?ticker=${stock}&type=stock&resolution=1&to=${to}&countBack=1`
-      const response = await fetch(url)
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-      const data = await response.json() as StockPriceResponse
-
-      if (data?.data?.[0]?.close) {
-        return data.data[0].close / 1000
-      }
-      return null
-    }
-    catch (error) {
-      console.error(`Error fetching price for ${stock}:`, error)
-      return null
-    }
-  }
-
-  private async fetchPreviousStockPrice(stock: string): Promise<number | null> {
-    try {
-      const to = this.getLatestMarketTime() - 24 * 60 * 60
-      const url = `${API_BASE_URL}/bars?ticker=${stock}&type=stock&resolution=1&to=${to}&countBack=1`
-
-      const response = await fetch(url)
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-      const data = await response.json() as StockPriceResponse
-
-      if (data?.data && data.data.length > 0) {
-        return data.data[0].close / 1000
-      }
-      return null
-    }
-    catch (error) {
-      console.error(`Error fetching previous price for ${stock}:`, error)
-      return null
-    }
-  }
-
-  async addPosition(channelId: string, position: StockPosition): Promise<boolean> {
-    const currentPrice = await this.fetchStockPrice(position.code)
-    const previousPrice = await this.fetchPreviousStockPrice(position.code)
-    if (!currentPrice)
-      return false
-
-    const tax = this.calculateTax(currentPrice, position.volume)
-    const profit = this.calculateProfit(currentPrice, position.buyPrice, position.volume)
-    const previousPercent = previousPrice ? ((currentPrice - previousPrice) / previousPrice) * 100 : 0
-
-    const newStock: StockData = {
-      id: this.generateId(),
-      code: position.code.toUpperCase(),
-      buyPrice: position.buyPrice,
-      price: position.buyPrice,
-      volume: position.volume,
-      current: currentPrice,
-      previousPrice: previousPrice || 0,
-      previousPercent,
-      tax,
-      profit,
-      timestamp: Date.now(),
-      total: position.volume * currentPrice,
-      broker: position.broker || 'TCBS',
-      investValue: position.volume * position.buyPrice,
-      marketValue: position.volume * currentPrice,
-      profitPercent: ((position.volume * currentPrice - position.volume * position.buyPrice) / (position.volume * position.buyPrice)) * 100,
-    }
-
-    const userStocks = this.stocks.get(channelId) || []
-    userStocks.push(newStock)
-    this.stocks.set(channelId, userStocks)
-
-    return true
-  }
-
-  removePosition(channelId: string, id: string): boolean {
-    const userStocks = this.stocks.get(channelId)
-    if (!userStocks)
-      return false
-
-    const updatedStocks = userStocks.filter(stock => stock.id !== id)
-    this.stocks.set(channelId, updatedStocks)
-    return true
-  }
-
-  async getAllChannelsWithData(): Promise<string[]> {
-    await this.ensureReady()
-
-    const guilds = this.client.guilds.cache.values()
-    const channels: string[] = []
-
-    for (const guild of guilds) {
-      const textChannels = guild.channels.cache.filter(
-        channel => channel.type === 0, // TextChannel type
-      )
-
-      for (const [_, channel] of textChannels) {
-        const channelId = channel.id
-        try {
-          const messages = await (channel as TextChannel).messages.fetch({ limit: 100 })
-
-          const hasData = messages.some(msg => msg.content.includes(`PORTFOLIO_DATA_`))
-
-          if (hasData) {
-            channels.push(channelId);
-          }
-        }
-        catch (error) {
-          console.error(`Không thể kiểm tra kênh ${channelId}:`, error)
-        }
-      }
-    }
-
-    return channels
-  }
-
-  async getAllPortfolios(): Promise<{ [channelId: string]: Portfolio }> {
-    const channels = await this.getAllChannelsWithData()
-    const portfolios: { [channelId: string]: Portfolio } = {}
-
-    for (const channelId of channels) {
-      try {
-        const portfolio = await this.getPortfolio(channelId)
-        portfolios[channelId] = portfolio
-      }
-      catch (error) {
-        console.error(`Lỗi khi lấy portfolio từ kênh ${channelId}:`, error)
-      }
-    }
-
-    return portfolios
-  }
-
-  // Thêm điểm theo dõi
-  async addFollowPoint(channelId: string, symbol: string, entry: number, takeProfit: number, stopLoss: number, volume: number): Promise<void> {
-    try {
-      const followList = await this.getFollowList(channelId)
-      const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
-
-      const newPoint: StockFollowPoint = { entry, takeProfit, stopLoss, volume }
-
-      if (stockIndex >= 0) {
-        // Thêm điểm mới vào cổ phiếu hiện có
-        followList.stocks[stockIndex].points.push(newPoint)
-      } else {
-        // Thêm cổ phiếu mới với điểm theo dõi
-        followList.stocks.push({
-          symbol,
-          points: [newPoint]
-        })
-      }
-
-      await this.saveFollowList(channelId, followList)
-    }
-    finally {
-      await this.destroy()
-    }
-  }
-
-  // Lấy channel
-  async getChannel(channelId: string): Promise<TextChannel | null> {
-    try {
-      await this.readyPromise
-      const channel = await this.client.channels.fetch(channelId)
-      return channel instanceof TextChannel ? channel : null
-    }
-    catch (error) {
-      console.error('Error getting channel:', error)
-      return null
-    }
-  }
-
-  // Lấy danh sách theo dõi
-  async getFollowList(channelId: string): Promise<StockFollowList> {
-    try {
-      const channel = await this.getChannel(channelId)
-      if (!channel) {
-        throw new Error('Channel not found')
-      }
-
-      const messages = await channel.messages.fetch({ limit: 100 })
-      const followListMessage = messages.find((msg: Message) => 
-        msg.author.id === this.client.user?.id && 
-        msg.content.startsWith('FOLLOW_LIST:')
-      )
-
-      if (followListMessage) {
-        const data = followListMessage.content.replace('FOLLOW_LIST:', '')
-        return JSON.parse(data) as StockFollowList
-      }
-
-      return { stocks: [] }
-    }
-    catch (error) {
-      console.error('Error getting follow list:', error)
-      return { stocks: [] }
-    }
-  }
-
-  // Lưu danh sách theo dõi
-  private async saveFollowList(channelId: string, followList: StockFollowList): Promise<void> {
-    try {
-      const channel = await this.getChannel(channelId)
-      if (!channel) {
-        throw new Error('Channel not found')
-      }
-
-      const messages = await channel.messages.fetch({ limit: 100 })
-      const oldMessage = messages.find((msg: Message) => 
-        msg.author.id === this.client.user?.id && 
-        msg.content.startsWith('FOLLOW_LIST:')
-      )
-
-      const content = `FOLLOW_LIST:${JSON.stringify(followList)}`
-
-      if (oldMessage) {
-        await oldMessage.edit(content)
-      } else {
-        await channel.send(content)
-      }
-    }
-    catch (error) {
-      console.error('Error saving follow list:', error)
-      throw error
-    }
-  }
-
-  // Xóa điểm theo dõi
-  async removeFollowPoint(channelId: string, symbol: string, entry?: number): Promise<boolean> {
-    try {
-      const followList = await this.getFollowList(channelId)
-      const stockIndex = followList.stocks.findIndex(s => s.symbol === symbol)
-
-      if (stockIndex < 0) {
-        return false
-      }
-
-      // Xóa toàn bộ cổ phiếu khỏi danh sách
-      if (entry) {
-        followList.stocks[stockIndex].points = followList.stocks[stockIndex].points.filter(p => p.entry !== entry)
-      } else {
-        followList.stocks.splice(stockIndex, 1)
-      }
-
-      await this.saveFollowList(channelId, followList)
-      return true
-    }
-    catch (error) {
-      console.error('Error removing follow point:', error)
-      return false
-    }
-  }
-
-  public async getAllChannels(): Promise<TextChannel[]> {
-    const channels: TextChannel[] = [];
-    try {
-      // Get all guilds the bot is in
-      const guilds = this.client.guilds.cache;
-
-      // For each guild, get all text channels
-      for (const guild of guilds.values()) {
-        const guildChannels = await guild.channels.fetch();
-        for (const channel of guildChannels.values()) {
-          if (channel?.isTextBased()) {
-            channels.push(channel as TextChannel);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error getting all channels:', error);
-    }
-    return channels;
+  
+  public removePosition(channelId: string, id: string): boolean {
+    return this.api.removePosition(channelId, id)
   }
 }
+
