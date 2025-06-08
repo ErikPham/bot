@@ -1,70 +1,152 @@
-import process from 'node:process'
-import { Client, Events, GatewayIntentBits } from 'discord.js'
-import { config as dotenvConfig } from 'dotenv'
-import { registerCommands } from './commands/register'
-import { Scheduler } from './utils/scheduler'
+import { Events } from 'discord.js';
+import type { Interaction } from 'discord.js';
+import { createDiscordClient, CLIENT_EVENTS } from './discord/client';
+import { createScheduler, SCHEDULER_EVENTS } from './scheduler';
+import { registerCommands } from './commands/register';
+import dotenv from 'dotenv';
 
-// Đọc biến môi trường từ file .env
-dotenvConfig()
+// Tải biến môi trường từ file .env
+dotenv.config();
 
-// Khởi tạo client với các intents cần thiết
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
-  ],
-})
+/**
+ * Xử lý lệnh từ người dùng
+ */
+async function handleCommand(interaction: Interaction, commands: Record<string, any>) {
+  if (!interaction.isChatInputCommand()) return;
 
-// Đăng nhập vào Discord với token
-client.login(process.env.DISCORD_TOKEN)
+  const { commandName } = interaction;
 
-registerCommands().then((commands) => {
-  // Sự kiện khi bot sẵn sàng
-  client.once(Events.ClientReady, (readyClient) => {
-    console.warn(`Đã đăng nhập thành công với tên ${readyClient.user.tag}`)
+  try {
+    const command = commands[commandName];
+    if (command) {
+      await command.execute(interaction);
+    } else {
+      await interaction.reply({
+        content: 'Lệnh không hợp lệ!',
+        ephemeral: true
+      });
+    }
+  } catch (error) {
+    console.error(`Lỗi khi xử lý lệnh ${commandName}:`, error);
     
-    // Khởi động profit scheduler sau khi bot đã sẵn sàng
-    const scheduler = Scheduler.getInstance()
-    scheduler.startProfitScheduler(client)
-    console.log(`Bot is ready as ${client.user?.tag}`)
-  })
+    const errorMessage = 'Đã xảy ra lỗi khi thực hiện lệnh!';
+    
+    if (interaction.replied || interaction.deferred) {
+      await interaction.editReply(errorMessage).catch(console.error);
+    } else {
+      await interaction.reply({
+        content: errorMessage,
+        ephemeral: true
+      }).catch(console.error);
+    }
+  }
+}
 
-  // Xử lý sự kiện tương tác (slash commands)
-  client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand())
-      return
-
-    const { commandName } = interaction
-
-    // Xử lý các lệnh
+/**
+ * Thiết lập xử lý tắt ứng dụng gracefully
+ */
+function setupGracefulShutdown(scheduler: ReturnType<typeof createScheduler>) {
+  let isShuttingDown = false;
+  
+  async function shutdown(signal: string) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    
+    console.log(`Nhận tín hiệu ${signal}, đang tắt ứng dụng...`);
+    
     try {
-      const command = commands[commandName]
-      if (command) {
-        await command.execute(interaction)
-      }
-      else {
-        await interaction.reply({
-          content: 'Lệnh không hợp lệ!',
-        })
-      }
+      await scheduler.destroy();
+      console.log('Đã tắt ứng dụng thành công');
+    } catch (error) {
+      console.error('Lỗi khi tắt ứng dụng:', error);
+    } finally {
+      process.exit(0);
     }
-    catch (error) {
-      console.error(error)
-      if (interaction.replied || interaction.deferred) {
-        try {
-          await interaction.editReply('Đã xảy ra lỗi khi thực hiện lệnh này!');
-        } catch (err) {
-          console.error('editReply failed:', err);
-        }
+  }
+  
+  // Xử lý các tín hiệu tắt
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('uncaughtException', (error) => {
+    console.error('Lỗi không được xử lý:', error);
+    shutdown('uncaughtException');
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('Promise rejection không được xử lý:', reason);
+    shutdown('unhandledRejection');
+  });
+}
+
+async function main() {
+  try {
+    console.log('Khởi động ứng dụng theo dõi chứng khoán...');
+    
+    // Khởi tạo Discord client
+    const discordClient = createDiscordClient();
+    
+    // Đăng ký event handlers cho client
+    discordClient.on(CLIENT_EVENTS.READY, () => {
+      console.log('Discord client đã sẵn sàng');
+    });
+    
+    discordClient.on(CLIENT_EVENTS.ERROR, (error) => {
+      console.error('Lỗi Discord client:', error);
+    });
+    
+    discordClient.on(CLIENT_EVENTS.DISCONNECTED, () => {
+      console.log('Discord client đã ngắt kết nối');
+    });
+    
+    // Đăng nhập Discord
+    const loginSuccess = await discordClient.login(process.env.DISCORD_TOKEN);
+    if (!loginSuccess) {
+      throw new Error('Không thể đăng nhập vào Discord');
+    }
+    
+    // Đăng ký commands
+    const commands = await registerCommands();
+    console.log(`Đã đăng ký ${Object.keys(commands).length} commands`);
+
+    // Xử lý tương tác (slash commands)
+    discordClient.client.on(Events.InteractionCreate, (interaction) => 
+      handleCommand(interaction, commands)
+    );
+    
+    // Khởi tạo scheduler
+    const scheduler = createScheduler(discordClient);
+    
+    // Đăng ký event handlers cho scheduler
+    scheduler.on(SCHEDULER_EVENTS.INITIALIZED, () => {
+      console.log('Scheduler đã được khởi tạo');
+    });
+    
+    scheduler.on(SCHEDULER_EVENTS.STARTED, (data) => {
+      if (data && data.channelId) {
+        console.log(`Đã khởi động trackers cho kênh: ${data.channelId}`);
       } else {
-        try {
-          await interaction.reply('Đã xảy ra lỗi khi thực hiện lệnh này!');
-        } catch (err) {
-          console.error('reply failed:', err);
-        }
+        console.log('Đã khởi động tất cả các trackers');
       }
-    }
-  })
-})
+    });
+    
+    scheduler.on(SCHEDULER_EVENTS.ERROR, (error) => {
+      console.error('Lỗi scheduler:', error);
+    });
+    
+    // Khởi tạo scheduler
+    await scheduler.initialize();
+    
+    // Khởi động tất cả các trackers
+    await scheduler.startAllTrackers();
+    
+    // Thiết lập xử lý tắt ứng dụng gracefully
+    setupGracefulShutdown(scheduler);
+    
+    console.log('Ứng dụng đã khởi động thành công');
+  } catch (error) {
+    console.error('Lỗi khi khởi động ứng dụng:', error);
+    process.exit(1);
+  }
+}
+
+// Khởi chạy ứng dụng
+main();

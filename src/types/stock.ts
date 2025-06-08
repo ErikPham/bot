@@ -26,11 +26,41 @@ export interface StockPosition {
   broker?: Broker
 }
 
+/**
+ * Response cho API lấy giá cổ phiếu
+ */
 export interface StockPriceResponse {
-  data: {
-    close: number
-    [key: string]: any
-  }[]
+  symbol: string;
+  price: number;
+  change: number;
+  percentChange: number;
+  volume: number;
+  tradingDate: string;
+}
+
+/**
+ * Response cho API lịch sử giá
+ */
+export interface StockHistoryResponse {
+  t: number[]; // timestamps
+  o: number[]; // open prices
+  h: number[]; // high prices
+  l: number[]; // low prices
+  c: number[]; // close prices
+  v: number[]; // volumes
+}
+
+/**
+ * Response cho API thông tin cơ bản
+ */
+export interface StockInfoResponse {
+  symbol: string;
+  exchange: string;
+  industry: string;
+  companyName: string;
+  marketCap: number;
+  issueShare: number;
+  outstandingShare: number;
 }
 
 export interface StockState {
