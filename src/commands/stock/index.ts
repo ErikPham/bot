@@ -44,25 +44,36 @@ export const stockCommand = {
 
   // Command handler
   async execute(interaction: ChatInputCommandInteraction) {
-    await interaction.deferReply();
-
     try {
+      // Reply trực tiếp thay vì defer
+      await interaction.reply({ content: '⏳ Đang xử lý...' });
       const subcommand = interaction.options.getSubcommand();
       
       // Routing tới handler tương ứng
       switch (subcommand) {
         case 'add':
-          return handleAddStock(interaction);
+          await handleAddStock(interaction);
+          break;
         case 'list':
-          return handleListStocks(interaction);
+          await handleListStocks(interaction);
+          break;
         case 'remove':
-          return handleRemoveStock(interaction);
+          await handleRemoveStock(interaction);
+          break;
         default:
-          await interaction.editReply('Lệnh không hợp lệ.');
+          await interaction.editReply({ content: 'Lệnh không hợp lệ.' });
       }
     } catch (error) {
       console.error('Error executing stock command:', error);
-      await interaction.editReply('❌ Đã xảy ra lỗi khi thực hiện lệnh.');
+      try {
+        if (interaction.replied) {
+          await interaction.editReply({ content: '❌ Đã xảy ra lỗi khi thực hiện lệnh.' });
+        } else {
+          await interaction.reply({ content: '❌ Đã xảy ra lỗi khi thực hiện lệnh.' });
+        }
+      } catch (replyError) {
+        console.error('Error sending error response:', replyError);
+      }
     }
   },
 };

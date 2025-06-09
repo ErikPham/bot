@@ -12,6 +12,7 @@ import process from 'node:process'
 import stockCommand from './stock'
 import portfolioCommand from './portfolio'
 import followCommand from './follow'
+import * as predictionCommand from './prediction'
 
 config()
 
@@ -19,6 +20,7 @@ const commands = [
   stockCommand.data,
   portfolioCommand.data,
   followCommand.data,
+  predictionCommand.data,
 ]
 
 const rest = new REST().setToken(process.env.DISCORD_TOKEN!)
@@ -51,4 +53,5 @@ export const commandsCollection: CommandsCollection = {
   stock: stockCommand,
   portfolio: portfolioCommand,
   follow: followCommand,
+  prediction: predictionCommand,
 }

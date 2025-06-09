@@ -1,6 +1,6 @@
 import { Client, TextChannel } from 'discord.js';
 import { STORAGE_PREFIX, getData, saveData } from '../storage/discord-storage';
-import { fetchStockPrice } from '../api/stock-api';
+import { fetchStockPrice } from '../api/stock';
 import type { StockFollow, StockFollowList, StockFollowPoint } from './models';
 
 /**
@@ -14,7 +14,6 @@ export async function getFollowList(
   return getData(
     client,
     channelId,
-    userId,
     STORAGE_PREFIX.FOLLOW_LIST,
     { stocks: [] }
   );
@@ -63,7 +62,7 @@ export async function addStockToFollowList(
       });
     }
 
-    return saveFollowList(client, userId, channelId, followList);
+    return saveFollowList(client, 'system', channelId, followList);
   } catch (error) {
     console.error('Lỗi khi thêm cổ phiếu vào danh sách theo dõi:', error);
     return false;

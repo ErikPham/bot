@@ -108,9 +108,7 @@ export function createScheduler(client?: DiscordClientType) {
    * Khởi động các tracker cho một kênh cụ thể
    */
   async function startChannelTracking(channel: TextChannel): Promise<void> {
-    try {
-      console.log(`Bắt đầu tracking cho kênh: ${channel.name}`);
-      
+    try {      
       // Khởi động các tracker
       await portfolioTracker.startTracking(channel);
       await followListTracker.startTracking(channel);

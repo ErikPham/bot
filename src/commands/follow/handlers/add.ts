@@ -1,7 +1,7 @@
 /**
  * Handler for adding a stock to follow list
  */
-import type { ChatInputCommandInteraction } from 'discord.js';
+import type { ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { addStockToFollowList } from '../../../follow/service';
 
 /**
@@ -9,16 +9,22 @@ import { addStockToFollowList } from '../../../follow/service';
  */
 export async function handleAddFollow(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
+    const channel = interaction.client.channels.cache.find((channel): channel is TextChannel => 
+      channel.type === 0 && channel.name === 'follow'
+    );
+    if (!channel) {
+      await interaction.editReply('Không tìm thấy kênh follow');
+      return;
+    }
+
+    const channelId = channel.id;
     const symbol = interaction.options.getString('symbol', true);
     const entry = interaction.options.getNumber('entry', true);
     const takeProfit = interaction.options.getNumber('takeprofit', true);
     const stopLoss = interaction.options.getNumber('stoploss', true);
     const volume = interaction.options.getNumber('volume') || 1000;
-    
     const userId = interaction.user.id;
-    const channelId = interaction.channelId;
 
-    // Validate input
     if (entry <= 0) {
       await interaction.editReply('❌ Giá mua phải lớn hơn 0');
       return;

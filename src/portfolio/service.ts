@@ -1,6 +1,6 @@
 import { Client } from 'discord.js';
 import { STORAGE_PREFIX, getData, saveData } from '../storage/discord-storage';
-import { fetchStockPrice, fetchPreviousStockPrice } from '../api/stock-api';
+import { fetchStockPrice, fetchPreviousStockPrice } from '../api/stock';
 import type { Portfolio, Stock, StockData, PortfolioSummary } from './models';
 
 /**
@@ -14,7 +14,6 @@ export async function getPortfolio(
   return getData(
     client,
     channelId,
-    userId,
     STORAGE_PREFIX.PORTFOLIO,
     { userId, channelId, stocks: [] }
   );
@@ -156,7 +155,7 @@ export async function getPortfolioDetails(
   
   for (const stock of portfolio.stocks) {
     const currentPrice = await fetchStockPrice(stock.symbol);
-    const previousPrice = await fetchPreviousStockPrice(stock.symbol, Date.now());
+    const previousPrice = await fetchPreviousStockPrice(stock.symbol);
     
     if (currentPrice) {
       const marketValue = currentPrice * stock.quantity;

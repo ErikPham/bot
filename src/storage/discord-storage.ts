@@ -3,7 +3,7 @@ import { Message, TextChannel, Client } from 'discord.js';
 // Prefixes cho các loại dữ liệu
 export const STORAGE_PREFIX = {
   PORTFOLIO: 'PORTFOLIO_DATA',
-  FOLLOW_LIST: 'FOLLOW_LIST_DATA'
+  FOLLOW_LIST: 'FOLLOW_LIST'
 };
 
 /**
@@ -12,7 +12,6 @@ export const STORAGE_PREFIX = {
 export async function getStorageMessage(
   client: Client, 
   channelId: string,
-  userId: string, 
   prefix: string
 ): Promise<Message | null> {
   try {
@@ -50,7 +49,7 @@ export async function saveData<T>(
       throw new Error('Không tìm thấy kênh lưu trữ.');
     }
 
-    const storageMessage = await getStorageMessage(client, channelId, userId, prefix);
+    const storageMessage = await getStorageMessage(client, channelId, prefix);
     const dataString = `${prefix}_${userId}_${channelId}: ${JSON.stringify(data)}`;
 
     if (storageMessage) {
@@ -72,12 +71,11 @@ export async function saveData<T>(
 export async function getData<T>(
   client: Client,
   channelId: string,
-  userId: string,
   prefix: string,
   defaultData: T
 ): Promise<T> {
   try {
-    const storageMessage = await getStorageMessage(client, channelId, userId, prefix);
+    const storageMessage = await getStorageMessage(client, channelId, prefix);
 
     if (!storageMessage) {
       return defaultData;
@@ -110,9 +108,10 @@ export async function getAllChannelsWithData(
     for (const [id, channel] of channels) {
       try {
         const messages = await channel.messages.fetch({ limit: 100 });
+        const pattern = new RegExp(`${prefix}_${userId}_\\d+:`);
         const hasData = messages.some(msg => 
           msg.author.id === client.user?.id && 
-          msg.content.includes(`${prefix}_`)
+          msg.content.match(pattern)
         );
         
         if (hasData) {

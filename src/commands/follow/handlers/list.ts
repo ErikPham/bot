@@ -1,24 +1,29 @@
 /**
  * Handler for listing stocks in follow list
  */
-import type { ChatInputCommandInteraction } from 'discord.js';
+import type { ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { EmbedBuilder } from 'discord.js';
 import { getFollowList } from '../../../follow/service';
-import { fetchStockPrice } from '../../../api/stock-api';
+import { fetchStockPrice } from '../../../api/stock';
 
 /**
  * Xử lý lệnh hiển thị danh sách theo dõi cổ phiếu
  */
 export async function handleListFollows(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
-    const userId = interaction.user.id;
-    const channelId = interaction.channelId;
+    const channel = interaction.client.channels.cache.find((channel): channel is TextChannel => 
+      channel.type === 0 && channel.name === 'follow'
+    );
+    if (!channel) {
+      await interaction.editReply('Không tìm thấy kênh follow');
+      return;
+    }
 
-    // Lấy thông tin danh sách theo dõi
+    const channelId = channel.id;
     const followList = await getFollowList(
       interaction.client,
-      userId,
-      channelId
+      'system',
+      channelId,
     );
 
     if (followList.stocks.length === 0) {

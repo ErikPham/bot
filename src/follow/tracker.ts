@@ -38,9 +38,7 @@ export function createFollowListTracker(
   /**
    * Bắt đầu theo dõi kênh
    */
-  async function startTracking(channel: TextChannel): Promise<void> {
-    console.log(`Bắt đầu theo dõi danh sách cổ phiếu cho kênh: ${channel.name}`);
-    
+  async function startTracking(channel: TextChannel): Promise<void> {    
     // Dừng tracking hiện tại nếu có
     stopTracking(channel.id);
     

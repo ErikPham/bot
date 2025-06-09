@@ -4,27 +4,34 @@ Bot Discord theo dõi danh mục đầu tư và danh sách cổ phiếu, gửi t
 
 ## Cấu trúc dự án
 
-Dự án được xây dựng theo phương pháp function-based thay vì OOP để cải thiện khả năng bảo trì và giảm code trùng lặp:
+Dự án được xây dựng theo phương pháp function-based để tối ưu khả năng bảo trì và tái sử dụng code:
 
 ```
 src/
 ├── api/              # Kết nối với API chứng khoán
 ├── discord/          # Kết nối với Discord API
 ├── follow-list/      # Quản lý danh sách theo dõi cổ phiếu
-├── portfolio/        # Quản lý danh mục đầu tư 
+├── portfolio/        # Quản lý danh mục đầu tư
 ├── storage/          # Lưu trữ dữ liệu qua Discord
 ├── types/            # Định nghĩa các types
 └── utils/            # Các utility functions
     └── time/         # Xử lý thời gian và lịch
 ```
 
-## Ưu điểm của cấu trúc mới
+## Ưu điểm của kiến trúc
 
 - **Pure functions**: Các hàm nhỏ, độc lập dễ test và bảo trì
 - **Factory functions**: Tạo các "module" có state riêng
 - **Event system**: Thông báo các thay đổi trạng thái
 - **Dễ mở rộng**: Thêm tính năng mới không ảnh hưởng tới code hiện có
 - **Giảm code trùng lặp**: Tái sử dụng code tốt hơn
+
+## Yêu cầu hệ thống
+
+- Node.js >= 18.x
+- pnpm >= 9.x
+- Discord Bot Token
+- Kết nối internet ổn định
 
 ## Cài đặt
 
@@ -36,39 +43,31 @@ cd bot
 
 2. Cài đặt dependencies:
 ```bash
-npm install
+pnpm install
 ```
 
-3. Tạo file `.env` với nội dung:
-```
+3. Tạo file `.env` với các biến môi trường:
+```env
 DISCORD_TOKEN=<your-discord-token>
 ```
 
-4. Chạy bot:
+4. Build và chạy bot:
 ```bash
-npm run start
+pnpm run build
+pnpm run start
 ```
-
-## Sử dụng
-
-Bot sẽ tự động theo dõi:
-- Danh sách cổ phiếu để gửi thông báo khi đạt mức giá mục tiêu
-- Danh mục đầu tư để gửi báo cáo lợi nhuận định kỳ
 
 ## Phát triển
 
-### Các lệnh npm
+### Các lệnh pnpm
 
-- `npm run build`: Build dự án
-- `npm run start`: Chạy bot
-- `npm run dev`: Chạy bot trong chế độ phát triển (nodemon)
-- `npm run lint`: Kiểm tra code style
-- `npm run test`: Chạy tests
-
-## Đóng góp
-
-Mọi đóng góp đều được chào đón! Tạo pull request hoặc mở issue để đóng góp.
+- `pnpm run build`: Build dự án
+- `pnpm run start`: Chạy bot
+- `pnpm run dev`: Chạy bot trong chế độ phát triển (nodemon)
+- `pnpm run lint`: Kiểm tra code style
+- `pnpm run test`: Chạy tests
+- `pnpm run format`: Format code với Prettier
 
 ## Giấy phép
 
-MIT License 
+MIT License

@@ -1,4 +1,4 @@
-import { Events } from 'discord.js';
+import { Events, MessageFlags } from 'discord.js';
 import type { Interaction } from 'discord.js';
 import { createDiscordClient, CLIENT_EVENTS } from './discord/client';
 import { createScheduler, SCHEDULER_EVENTS } from './scheduler';
@@ -12,33 +12,44 @@ dotenv.config();
  * Xử lý lệnh từ người dùng
  */
 async function handleCommand(interaction: Interaction, commands: Record<string, any>) {
+  // Handle autocomplete interactions
+  if (interaction.isAutocomplete()) {
+    const { commandName } = interaction;
+    const command = commands[commandName];
+    
+    if (command && command.autocomplete) {
+      try {
+        await command.autocomplete(interaction);
+      } catch (error) {
+        console.error(`Lỗi khi xử lý autocomplete cho lệnh ${commandName}:`, error);
+      }
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
-
-  try {
-    const command = commands[commandName];
-    if (command) {
-      await command.execute(interaction);
-    } else {
+  
+  // Lấy command từ danh sách commands đã đăng ký
+  const command = commands[commandName];
+  
+  if (!command) {
+    try {
       await interaction.reply({
         content: 'Lệnh không hợp lệ!',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
+    } catch (replyError) {
+      console.error('Không thể gửi thông báo lệnh không hợp lệ:', replyError);
     }
+    return;
+  }
+
+  try {
+    await command.execute(interaction);
   } catch (error) {
-    console.error(`Lỗi khi xử lý lệnh ${commandName}:`, error);
-    
-    const errorMessage = 'Đã xảy ra lỗi khi thực hiện lệnh!';
-    
-    if (interaction.replied || interaction.deferred) {
-      await interaction.editReply(errorMessage).catch(console.error);
-    } else {
-      await interaction.reply({
-        content: errorMessage,
-        ephemeral: true
-      }).catch(console.error);
-    }
+    console.error(`Lỗi khi thực thi lệnh ${commandName}:`, error);
   }
 }
 

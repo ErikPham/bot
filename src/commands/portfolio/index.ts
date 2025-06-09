@@ -15,24 +15,12 @@ export const portfolioCommand = {
       option
         .setName('channel')
         .setDescription('Chọn channel để xem portfolio (mặc định là channel hiện tại)')
-        .setRequired(false)
-        .addChoices(
-          { name: 'Tất cả', value: 'all' },
-          { name: 'Hiện tại', value: 'current' }
-        )
+        .setRequired(false),
     ),
 
-  // Command handler
   async execute(interaction: ChatInputCommandInteraction) {
-    await interaction.deferReply();
-
-    try {
-      // Gọi handler
-      await handlePortfolioDisplay(interaction);
-    } catch (error) {
-      console.error('Error executing portfolio command:', error);
-      await interaction.editReply('❌ Đã xảy ra lỗi khi hiển thị danh mục đầu tư.');
-    }
+    const channelOption = interaction.options.getString('channel') || 'current';
+    await handlePortfolioDisplay(interaction, channelOption);
   },
 };
 
